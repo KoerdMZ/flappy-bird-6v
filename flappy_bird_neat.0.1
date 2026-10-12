@@ -1,0 +1,601 @@
+import os
+import pickle
+import random
+import pygame
+import neat
+
+# ==========================================
+# INSTELLINGEN
+# ==========================================
+
+pygame.init()
+
+WIN_WIDTH = 600
+WIN_HEIGHT = 800
+FLOOR = 730
+FPS = 100
+
+PIPE_GAP = 160
+PIPE_VEL = 5
+BASE_VEL = 5
+
+POPULATION_SIZE = 50
+MAX_GENERATIONS = 100
+
+# True = AI trainen
+# False = opgeslagen AI spelen
+TRAIN_MODE = True
+
+LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
+IMG_DIR = os.path.join(LOCAL_DIR, "imgs")
+CONFIG_PATH = os.path.join(
+    LOCAL_DIR, "config-feedforward.txt"
+)
+WINNER_PATH = os.path.join(LOCAL_DIR, "winner.pkl")
+
+WIN = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
+pygame.display.set_caption("Flappy Bird AI")
+
+STAT_FONT = pygame.font.SysFont("comicsans", 35)
+
+
+# ==========================================
+# AFBEELDINGEN LADEN
+# ==========================================
+
+def load_image(filename):
+    path = os.path.join(IMG_DIR, filename)
+
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            "Afbeelding niet gevonden: " + path
+        )
+
+    return pygame.image.load(path).convert_alpha()
+
+
+pipe_img = pygame.transform.scale2x(
+    load_image("pipe.png")
+)
+
+bg_img = pygame.transform.scale(
+    load_image("bg.png"),
+    (WIN_WIDTH, WIN_HEIGHT)
+)
+
+bird_images = [
+    pygame.transform.scale2x(
+        load_image("bird" + str(i) + ".png")
+    )
+    for i in range(1, 4)
+]
+
+base_img = pygame.transform.scale2x(
+    load_image("base.png")
+)
+
+
+# ==========================================
+# VOGEL
+# ==========================================
+
+class Bird:
+    MAX_ROTATION = 25
+    ROT_VEL = 20
+    ANIMATION_TIME = 10
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.tilt = 0
+        self.tick_count = 0
+        self.vel = 0
+        self.height = y
+        self.img_count = 0
+        self.img = bird_images[0]
+
+    def jump(self):
+        self.vel = -10.5
+        self.tick_count = 0
+        self.height = self.y
+
+    def move(self):
+        self.tick_count += 1
+
+        displacement = (
+            self.vel * self.tick_count
+            + 0.5 * 3 * self.tick_count ** 2
+        )
+
+        if displacement >= 16:
+            displacement = 16
+
+        if displacement < 0:
+            displacement -= 2
+
+        self.y += displacement
+
+        if displacement < 0 or self.y < self.height + 50:
+            self.tilt = self.MAX_ROTATION
+        else:
+            self.tilt = max(
+                -90, self.tilt - self.ROT_VEL
+            )
+
+    def draw(self, win):
+        self.img_count += 1
+
+        frame = (
+            self.img_count // self.ANIMATION_TIME
+        ) % 4
+
+        frames = [
+            bird_images[0],
+            bird_images[1],
+            bird_images[2],
+            bird_images[1]
+        ]
+
+        self.img = frames[frame]
+
+        if self.tilt <= -80:
+            self.img = bird_images[1]
+
+        rotated_image = pygame.transform.rotate(
+            self.img, self.tilt
+        )
+
+        rect = rotated_image.get_rect(
+            center=(
+                self.x + self.img.get_width() / 2,
+                self.y + self.img.get_height() / 2
+            )
+        )
+
+        win.blit(rotated_image, rect.topleft)
+
+    def get_mask(self):
+        return pygame.mask.from_surface(self.img)
+
+
+# ==========================================
+# PIJPEN
+# ==========================================
+
+class Pipe:
+    GAP = 160
+    VEL = 5
+
+    def __init__(self, x):
+        self.x = x
+        self.height = 0
+        self.top = 0
+        self.bottom = 0
+
+        self.PIPE_TOP = pygame.transform.flip(
+            pipe_img, False, True
+        )
+        self.PIPE_BOTTOM = pipe_img
+
+        self.passed = False
+        self.set_height()
+
+    def set_height(self):
+        self.height = random.randrange(100, 400)
+        self.top = (
+            self.height - self.PIPE_TOP.get_height()
+        )
+        self.bottom = self.height + self.GAP
+
+    def move(self):
+        self.x -= self.VEL
+
+    def draw(self, win):
+        win.blit(self.PIPE_TOP, (self.x, self.top))
+        win.blit(self.PIPE_BOTTOM, (self.x, self.bottom))
+
+    def collide(self, bird):
+        bird_mask = bird.get_mask()
+
+        top_mask = pygame.mask.from_surface(
+            self.PIPE_TOP
+        )
+        bottom_mask = pygame.mask.from_surface(
+            self.PIPE_BOTTOM
+        )
+
+        top_offset = (
+            int(self.x - bird.x),
+            int(self.top - bird.y)
+        )
+
+        bottom_offset = (
+            int(self.x - bird.x),
+            int(self.bottom - bird.y)
+        )
+
+        top_collision = bird_mask.overlap(
+            top_mask, top_offset
+        )
+
+        bottom_collision = bird_mask.overlap(
+            bottom_mask, bottom_offset
+        )
+
+        return (
+            top_collision is not None
+            or bottom_collision is not None
+        )
+
+
+# ==========================================
+# GROND
+# ==========================================
+
+class Base:
+    VEL = BASE_VEL
+    WIDTH = base_img.get_width()
+    IMG = base_img
+
+    def __init__(self, y):
+        self.y = y
+        self.x1 = 0
+        self.x2 = self.WIDTH
+
+    def move(self):
+        self.x1 -= self.VEL
+        self.x2 -= self.VEL
+
+        if self.x1 + self.WIDTH < 0:
+            self.x1 = self.x2 + self.WIDTH
+
+        if self.x2 + self.WIDTH < 0:
+            self.x2 = self.x1 + self.WIDTH
+
+    def draw(self, win):
+        win.blit(self.IMG, (self.x1, self.y))
+        win.blit(self.IMG, (self.x2, self.y))
+
+
+# ==========================================
+# SPEL TEKENEN
+# ==========================================
+
+def draw_window(
+    win, birds, pipes, base, score, generation
+):
+    win.blit(bg_img, (0, 0))
+
+    for pipe in pipes:
+        pipe.draw(win)
+
+    base.draw(win)
+
+    for bird in birds:
+        bird.draw(win)
+
+    score_text = STAT_FONT.render(
+        "Score: " + str(score),
+        True,
+        (255, 255, 255)
+    )
+
+    generation_text = STAT_FONT.render(
+        "Generatie: " + str(generation),
+        True,
+        (255, 255, 255)
+    )
+
+    alive_text = STAT_FONT.render(
+        "Levend: " + str(len(birds)),
+        True,
+        (255, 255, 255)
+    )
+
+    win.blit(
+        score_text,
+        (WIN_WIDTH - score_text.get_width() - 10, 10)
+    )
+    win.blit(generation_text, (10, 10))
+    win.blit(alive_text, (10, 50))
+
+    pygame.display.update()
+
+
+# ==========================================
+# FITNESS EN AI TRAINING
+# ==========================================
+
+generation = 0
+
+
+def eval_genomes(genomes, config):
+    birds = []
+    nets = []
+    genome_list = []
+
+    for genome_id, genome in genomes:
+        genome.fitness = 0
+
+        net = neat.nn.FeedForwardNetwork.create(
+            genome, config
+        )
+
+        birds.append(Bird(230, 350))
+        nets.append(net)
+        genome_list.append(genome)
+
+    base = Base(FLOOR)
+    pipes = [Pipe(600)]
+    score = 0
+    clock = pygame.time.Clock()
+
+    while birds:
+        clock.tick(100)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                raise SystemExit
+
+        pipe_index = 0
+
+        if (
+            len(pipes) > 1
+            and pipes[0].x
+            + pipes[0].PIPE_TOP.get_width() < 230
+        ):
+            pipe_index = 1
+
+        # Elke vogel wordt bestuurd door zijn eigen netwerk.
+        for i, bird in enumerate(birds):
+            genome_list[i].fitness += 0.1
+            bird.move()
+
+            pipe = pipes[pipe_index]
+
+            output = nets[i].activate((
+                bird.y / WIN_HEIGHT,
+                abs(bird.y - pipe.height) / WIN_HEIGHT,
+                abs(bird.y - pipe.bottom) / WIN_HEIGHT
+            ))
+
+            if output[0] > 0.5:
+                bird.jump()
+
+        base.move()
+
+        # Vogels veilig verwijderen na een botsing.
+        alive_birds = []
+        alive_nets = []
+        alive_genomes = []
+
+        for bird, net, genome in zip(
+            birds, nets, genome_list
+        ):
+            hit_pipe = any(
+                pipe.collide(bird) for pipe in pipes
+            )
+
+            hit_ground = (
+                bird.y + bird.img.get_height() - 10 >= FLOOR
+                or bird.y < -50
+            )
+
+            if hit_pipe or hit_ground:
+                genome.fitness -= 2
+            else:
+                alive_birds.append(bird)
+                alive_nets.append(net)
+                alive_genomes.append(genome)
+
+        birds = alive_birds
+        nets = alive_nets
+        genome_list = alive_genomes
+
+        # Pijpen verplaatsen en score toekennen.
+        add_pipe = False
+
+        for pipe in pipes:
+            pipe.move()
+
+            if (
+                not pipe.passed
+                and pipe.x + pipe.PIPE_TOP.get_width() < 230
+            ):
+                pipe.passed = True
+                add_pipe = True
+
+        if add_pipe:
+            score += 1
+
+            for genome in genome_list:
+                genome.fitness += 15
+
+            pipes.append(Pipe(WIN_WIDTH))
+
+        pipes = [
+            pipe for pipe in pipes
+            if pipe.x + pipe.PIPE_TOP.get_width() > 0
+        ]
+
+        draw_window(
+            WIN, birds, pipes, base, score, generation
+        )
+
+
+def eval_generation(genomes, config):
+    global generation
+    generation += 1
+
+    print("Start generatie:", generation)
+
+    eval_genomes(genomes, config)
+
+
+# ==========================================
+# NEAT CONFIGURATIE
+# ==========================================
+
+def create_config():
+    if not os.path.isfile(CONFIG_PATH):
+        raise FileNotFoundError(
+            "config-feedforward.txt ontbreekt.\n"
+            "Plaats het bestand naast dit Python-bestand."
+        )
+
+    config = neat.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        CONFIG_PATH
+    )
+
+    config.pop_size = POPULATION_SIZE
+
+    return config
+
+
+# ==========================================
+# TRAINEN EN OPSLAAN
+# ==========================================
+
+def train_ai():
+    config = create_config()
+
+    population = neat.Population(config)
+
+    population.add_reporter(
+        neat.StdOutReporter(True)
+    )
+
+    population.add_reporter(
+        neat.StatisticsReporter()
+    )
+
+    winner = population.run(
+        eval_generation,
+        MAX_GENERATIONS
+    )
+
+    with open(WINNER_PATH, "wb") as file:
+        pickle.dump(winner, file)
+
+    print("Training voltooid!")
+    print("Beste genoom:", winner)
+    print("Opgeslagen als:", WINNER_PATH)
+
+
+# ==========================================
+# BESTE VOGEL LATEN SPELEN
+# ==========================================
+
+def play_winner():
+    config = create_config()
+
+    if not os.path.isfile(WINNER_PATH):
+        print(
+            "winner.pkl bestaat nog niet. "
+            "Train de AI eerst."
+        )
+        return
+
+    with open(WINNER_PATH, "rb") as file:
+        winner = pickle.load(file)
+
+    net = neat.nn.FeedForwardNetwork.create(
+        winner, config
+    )
+
+    bird = Bird(230, 350)
+    base = Base(FLOOR)
+    pipes = [Pipe(600)]
+    score = 0
+    clock = pygame.time.Clock()
+    running = True
+
+    while running:
+        clock.tick(FPS)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        pipe_index = 0
+
+        if (
+            len(pipes) > 1
+            and pipes[0].x
+            + pipes[0].PIPE_TOP.get_width() < bird.x
+        ):
+            pipe_index = 1
+
+        pipe = pipes[pipe_index]
+
+        bird.move()
+
+        output = net.activate((
+            bird.y / WIN_HEIGHT,
+            abs(bird.y - pipe.height) / WIN_HEIGHT,
+            abs(bird.y - pipe.bottom) / WIN_HEIGHT
+        ))
+
+        if output[0] > 0.5:
+            bird.jump()
+
+        base.move()
+
+        add_pipe = False
+
+        for current_pipe in pipes:
+            current_pipe.move()
+
+            if (
+                not current_pipe.passed
+                and current_pipe.x
+                + current_pipe.PIPE_TOP.get_width() < bird.x
+            ):
+                current_pipe.passed = True
+                add_pipe = True
+
+        if add_pipe:
+            score += 1
+            pipes.append(Pipe(WIN_WIDTH))
+
+        pipes = [
+            p for p in pipes
+            if p.x + p.PIPE_TOP.get_width() > 0
+        ]
+
+        crashed = (
+            any(p.collide(bird) for p in pipes)
+            or bird.y + bird.img.get_height() - 10 >= FLOOR
+            or bird.y < -50
+        )
+
+        if crashed:
+            bird = Bird(230, 350)
+            pipes = [Pipe(600)]
+            score = 0
+
+        draw_window(
+            WIN, [bird], pipes, base, score, 0
+        )
+
+    pygame.quit()
+
+
+# ==========================================
+# START
+# ==========================================
+
+if __name__ == "__main__":
+    try:
+        if TRAIN_MODE:
+            train_ai()
+        else:
+            play_winner()
+    except KeyboardInterrupt:
+        print("Training handmatig gestopt.")
+    finally:
+        pygame.quit()

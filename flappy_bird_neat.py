@@ -1,3 +1,4 @@
+
 """
 The classic game of flappy bird, but now it's selflearning. Implemented in python and pygame,
 with NEAT python AI library, following along Tech with Tim's tutorial "AI plays Flappy Bird". Thanx Tim!
@@ -10,6 +11,7 @@ import random
 import os
 import time
 import neat
+import pickle
 #import visualize
 #import pickle
 pygame.font.init()  # init font
@@ -318,7 +320,7 @@ def eval_genomes(genomes, config):
     nets = []
     birds = []
     ge = []
-    
+   
     for genome_id, genome in genomes:
         genome.fitness = 0
         net = neat.nn.FeedForwardNetwork.create(genome, config)
@@ -334,7 +336,7 @@ def eval_genomes(genomes, config):
 
     run = True
     while run and len(birds) > 0:
-        clock.tick(100)
+        clock.tick(600)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -347,7 +349,7 @@ def eval_genomes(genomes, config):
         if len(birds) > 0:
             if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
                 pipe_ind = 1
-        
+       
         for x, bird in enumerate(birds):
             ge[x].fitness += 0.2
             bird.move()
@@ -363,7 +365,7 @@ def eval_genomes(genomes, config):
         add_pipe = False
         for pipe in pipes:
             pipe.move()
-            
+           
             for bird in birds:
                 if pipe.collide(bird, win):
                     ge[birds.index(bird)].fitness -= 1
@@ -380,10 +382,11 @@ def eval_genomes(genomes, config):
 
         if add_pipe:
             score += 1
-            
+       
+           
             for genome in ge:
-                genome.fitness += 10
-            
+                genome.fitness += 5
+           
             pipes.append(Pipe(WIN_WIDTH))
 
         for r in rem:
@@ -396,7 +399,8 @@ def eval_genomes(genomes, config):
                 birds.pop(birds.index(bird))
 
         draw_window(WIN, birds, pipes, base, score, gen, pipe_ind)
-
+        if score == 1000:
+            run = False
 def run(config_file):
     """
     runs the NEAT algorithm to train a neural network to play flappy bird.
@@ -417,11 +421,21 @@ def run(config_file):
     #p.add_reporter(neat.Checkpointer(5))
 
     # Run for up to 50 generations.
-    winner = p.run(eval_genomes, 50)
+    winner = p.run(eval_genomes, 10)
+   
+    # Sla het beste vogeltje op
+    with open("winner.pkl", "wb") as f:
+        pickle.dump(winner, f)
+
+    print("Beste vogeltje opgeslagen in winner.pkl!")
+    print("Fitness:", winner.fitness)
+    with open("winner.pkl", "rb") as f:
+        winner = pickle.load(f)
+
+    net = neat.nn.FeedForwardNetwork.create(winner, config)
 
     # show final stats
-    print('\nBest genome:\n{!s}'.format(winner))
-    
+   
     # Save the winner genome to a pickle .pkl file
     #with open("winner.pkl", "wb") as f:
     #    pickle.dump(winner, f)
